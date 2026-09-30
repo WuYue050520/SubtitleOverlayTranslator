@@ -63,13 +63,13 @@ class MainActivity : Activity() {
         }
         apiKeyInput = EditText(this).apply {
             hint = "OpenAI API Key（可选）"
-            text = getPreferences(Context.MODE_PRIVATE).getString("openai_key", "")
+            text = getSharedPreferences("subtitle_settings", Context.MODE_PRIVATE).getString("openai_key", "")
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
         val saveKey = Button(this).apply {
             text = "保存 AI Key / 启用 AI 视觉翻译"
             setOnClickListener {
-                getPreferences(Context.MODE_PRIVATE).edit().putString("openai_key", apiKeyInput.text.toString().trim()).apply()
+                getSharedPreferences("subtitle_settings", Context.MODE_PRIVATE).edit().putString("openai_key", apiKeyInput.text.toString().trim()).apply()
                 Toast.makeText(this@MainActivity, if (apiKeyInput.text.toString().trim().isEmpty()) "已关闭 AI 模式，使用本地 OCR" else "AI Key 已保存", Toast.LENGTH_SHORT).show()
             }
         }
