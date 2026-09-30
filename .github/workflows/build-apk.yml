@@ -37,7 +37,7 @@ jobs:
           echo "sdkmanager=$SDKMANAGER"
           "$SDKMANAGER" --version
           yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;34.0.0"
       - name: Build debug APK
         run: gradle --no-daemon --stacktrace :app:assembleDebug
       - name: Upload APK
