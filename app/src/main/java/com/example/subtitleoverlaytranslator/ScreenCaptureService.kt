@@ -54,7 +54,7 @@ class ScreenCaptureService : Service() {
         private const val CHANNEL_ID = "subtitle_translate"
         private const val NOTIFICATION_ID = 42
         private const val OCR_INTERVAL_MS = 900L
-        private const val AI_INTERVAL_MS = 1800L
+        private const val AI_INTERVAL_MS = 2200L
     }
 
     private val executor = Executors.newSingleThreadExecutor()
@@ -68,6 +68,7 @@ class ScreenCaptureService : Service() {
     private var processing = false
     private var lastOcrAt = 0L
     private var lastAiAt = 0L
+    private var lastAiImageSignature = ""
     private val httpClient = OkHttpClient.Builder().build()
 
     private val latinRecognizer: TextRecognizer by lazy {
@@ -162,7 +163,7 @@ class ScreenCaptureService : Service() {
         bitmap.recycle()
 
         val apiKey = getSharedPreferences("subtitle_settings", MODE_PRIVATE)
-            .getString("openai_key", "")?.trim().orEmpty()
+            .getString("gemini_key", "")?.trim().orEmpty()
 
         if (apiKey.isNotEmpty() && System.currentTimeMillis() - lastAiAt >= AI_INTERVAL_MS) {
             lastAiAt = System.currentTimeMillis()
@@ -217,40 +218,69 @@ class ScreenCaptureService : Service() {
             try {
                 val maxWidth = 1000
                 val scaled = if (crop.width > maxWidth) {
-                    Bitmap.createScaledBitmap(crop, maxWidth, (crop.height * maxWidth.toFloat() / crop.width).toInt(), true)
+                    Bitmap.createScaledBitmap(
+                        crop,
+                        maxWidth,
+                        (crop.height * maxWidth.toFloat() / crop.width).toInt().coerceAtLeast(1),
+                        true
+                    )
                 } else crop
+
+                // Avoid sending essentially identical subtitle frames repeatedly.
+                val signature = imageSignature(scaled)
+                if (signature == lastAiImageSignature) {
+                    if (scaled !== crop) scaled.recycle()
+                    crop.recycle()
+                    handler.post { processing = false }
+                    return@execute
+                }
+                lastAiImageSignature = signature
+
                 val output = java.io.ByteArrayOutputStream()
-                scaled.compress(Bitmap.CompressFormat.JPEG, 70, output)
+                scaled.compress(Bitmap.CompressFormat.JPEG, 82, output)
                 val b64 = Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
                 if (scaled !== crop) scaled.recycle()
                 crop.recycle()
 
-                val prompt = "This is a video subtitle region. Read ONLY the actual spoken subtitle. Ignore people, objects, logos, signs, UI text, watermarks and background text. The subtitle may be English or Japanese. Reconstruct obvious visual/OCR ambiguity, then translate it naturally into Simplified Chinese. Return ONLY the Chinese translation, with no quotes, explanation, source text, or labels. If there is no clear subtitle, return an empty string."
+                val prompt = "You are translating subtitles from a video. Read ONLY the actual spoken subtitle text visible in the image. " +
+                    "Ignore people, faces, objects, scenery, signs, logos, watermarks, app UI and other background text. " +
+                    "The subtitle may be English or Japanese. Carefully reconstruct the exact intended subtitle from the image, " +
+                    "including punctuation, names and numbers when clear. Do not invent words that are not visible. " +
+                    "Then translate it naturally into Simplified Chinese. Return ONLY the Chinese translation. " +
+                    "If there is no clear spoken subtitle, return an empty string."
 
-                val content = JSONArray()
-                    .put(JSONObject().put("type", "input_text").put("text", prompt))
-                    .put(JSONObject().put("type", "input_image")
-                        .put("image_url", "data:image/jpeg;base64,$b64")
-                        .put("detail", "high"))
+                val parts = JSONArray()
+                    .put(JSONObject().put("text", prompt))
+                    .put(
+                        JSONObject().put(
+                            "inline_data",
+                            JSONObject()
+                                .put("mime_type", "image/jpeg")
+                                .put("data", b64)
+                        )
+                    )
 
-                val inputItem = JSONObject().put("role", "user").put("content", content)
                 val body = JSONObject()
-                    .put("model", "gpt-5.6-luna")
-                    .put("input", JSONArray().put(inputItem))
-                    .put("max_output_tokens", 120)
+                    .put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", parts)))
+                    .put(
+                        "generationConfig",
+                        JSONObject()
+                            .put("temperature", 0.1)
+                            .put("maxOutputTokens", 120)
+                    )
 
                 val request = Request.Builder()
-                    .url("https://api.openai.com/v1/responses")
-                    .addHeader("Authorization", "Bearer $apiKey")
+                    .url("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent")
+                    .addHeader("x-goog-api-key", apiKey)
                     .addHeader("Content-Type", "application/json")
                     .post(body.toString().toRequestBody("application/json".toMediaType()))
                     .build()
 
                 httpClient.newCall(request).execute().use { response ->
                     val raw = response.body?.string().orEmpty()
-                    if (!response.isSuccessful) throw IllegalStateException("AI HTTP ${response.code}")
+                    if (!response.isSuccessful) throw IllegalStateException("Gemini HTTP ${response.code}")
                     val json = JSONObject(raw)
-                    val text = extractResponseText(json).trim()
+                    val text = extractGeminiText(json).trim()
                     handler.post {
                         if (text.isNotBlank() && text != lastShown) {
                             lastShown = text
@@ -265,20 +295,46 @@ class ScreenCaptureService : Service() {
         }
     }
 
-    private fun extractResponseText(json: JSONObject): String {
-        val direct = json.optString("output_text", "")
-        if (direct.isNotBlank()) return direct
-        val output = json.optJSONArray("output") ?: return ""
+    private fun extractGeminiText(json: JSONObject): String {
+        val candidates = json.optJSONArray("candidates") ?: return ""
         val result = StringBuilder()
-        for (i in 0 until output.length()) {
-            val item = output.optJSONObject(i) ?: continue
-            val content = item.optJSONArray("content") ?: continue
-            for (j in 0 until content.length()) {
-                val part = content.optJSONObject(j) ?: continue
-                if (part.optString("type") == "output_text") result.append(part.optString("text"))
+        for (i in 0 until candidates.length()) {
+            val candidate = candidates.optJSONObject(i) ?: continue
+            val content = candidate.optJSONObject("content") ?: continue
+            val parts = content.optJSONArray("parts") ?: continue
+            for (j in 0 until parts.length()) {
+                val part = parts.optJSONObject(j) ?: continue
+                val text = part.optString("text", "")
+                if (text.isNotBlank()) result.append(text)
             }
         }
         return result.toString()
+    }
+
+    private fun imageSignature(bitmap: Bitmap): String {
+        // Small perceptual signature: enough to skip identical subtitle frames,
+        // while still detecting a changed subtitle or scene.
+        val w = 16
+        val h = 9
+        var sum = 0L
+        var sumSq = 0L
+        val samples = IntArray(w * h)
+        var index = 0
+        for (y in 0 until h) {
+            val sy = (y * bitmap.height / h).coerceAtMost(bitmap.height - 1)
+            for (x in 0 until w) {
+                val sx = (x * bitmap.width / w).coerceAtMost(bitmap.width - 1)
+                val p = bitmap.getPixel(sx, sy)
+                val gray = (Color.red(p) * 299 + Color.green(p) * 587 + Color.blue(p) * 114) / 1000
+                samples[index++] = gray
+                sum += gray
+                sumSq += gray.toLong() * gray
+            }
+        }
+        val mean = sum / samples.size
+        val bits = StringBuilder(samples.size)
+        for (v in samples) bits.append(if (v >= mean) '1' else '0')
+        return bits.toString() + ":" + (sumSq / samples.size)
     }
 
     private fun chooseSubtitle(candidates: Set<String>): String {
