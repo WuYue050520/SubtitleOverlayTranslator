@@ -62,15 +62,15 @@ class MainActivity : Activity() {
             }
         }
         apiKeyInput = EditText(this).apply {
-            hint = "OpenAI API Key（可选）"
-            setText(getSharedPreferences("subtitle_settings", Context.MODE_PRIVATE).getString("openai_key", "") ?: "")
+            hint = "Gemini API Key（免费额度）"
+            setText(getSharedPreferences("subtitle_settings", Context.MODE_PRIVATE).getString("gemini_key", "") ?: "")
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
         val saveKey = Button(this).apply {
-            text = "保存 AI Key / 启用 AI 视觉翻译"
+            text = "保存 Gemini Key / 启用 AI 视觉翻译"
             setOnClickListener {
-                getSharedPreferences("subtitle_settings", Context.MODE_PRIVATE).edit().putString("openai_key", apiKeyInput.text.toString().trim()).apply()
-                Toast.makeText(this@MainActivity, if (apiKeyInput.text.toString().trim().isEmpty()) "已关闭 AI 模式，使用本地 OCR" else "AI Key 已保存", Toast.LENGTH_SHORT).show()
+                getSharedPreferences("subtitle_settings", Context.MODE_PRIVATE).edit().putString("gemini_key", apiKeyInput.text.toString().trim()).apply()
+                Toast.makeText(this@MainActivity, if (apiKeyInput.text.toString().trim().isEmpty()) "已关闭 AI 模式，使用本地 OCR" else "Gemini Key 已保存", Toast.LENGTH_SHORT).show()
             }
         }
         val note = TextView(this).apply {
