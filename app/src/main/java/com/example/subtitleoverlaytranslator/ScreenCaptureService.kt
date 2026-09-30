@@ -306,7 +306,9 @@ class ScreenCaptureService : Service() {
 
     private fun isLikelyLatinSubtitle(text: String): Boolean {
         val letters = text.count { it in 'A'..'Z' || it in 'a'..'z' }
-        val cjk = text.count { it in '\u4E00'..'\u9FFF' }\n        val totalLetters = letters + cjk\n        return letters >= 2 && (totalLetters == 0 || letters.toDouble() / totalLetters >= 0.70) && !hasJapaneseKana(text)
+        val cjk = text.count { it in '\u4E00'..'\u9FFF' }
+        val totalLetters = letters + cjk
+        return letters >= 2 && (totalLetters == 0 || letters.toDouble() / totalLetters >= 0.70) && !hasJapaneseKana(text)
     }
 
     private fun latinScore(text: String): Int =
