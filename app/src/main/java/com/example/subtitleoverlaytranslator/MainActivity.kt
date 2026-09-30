@@ -12,6 +12,8 @@ import android.os.Bundle
 import android.provider.Settings
 import android.view.Gravity
 import android.widget.Button
+import android.widget.EditText
+import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -22,6 +24,7 @@ class MainActivity : Activity() {
     private val captureRequest = 1001
     private val notificationRequest = 1002
     private lateinit var status: TextView
+    private lateinit var apiKeyInput: EditText
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -58,6 +61,18 @@ class MainActivity : Activity() {
                 status.text = "状态：已停止"
             }
         }
+        apiKeyInput = EditText(this).apply {
+            hint = "OpenAI API Key（可选）"
+            text = getPreferences(Context.MODE_PRIVATE).getString("openai_key", "")
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        val saveKey = Button(this).apply {
+            text = "保存 AI Key / 启用 AI 视觉翻译"
+            setOnClickListener {
+                getPreferences(Context.MODE_PRIVATE).edit().putString("openai_key", apiKeyInput.text.toString().trim()).apply()
+                Toast.makeText(this@MainActivity, if (apiKeyInput.text.toString().trim().isEmpty()) "已关闭 AI 模式，使用本地 OCR" else "AI Key 已保存", Toast.LENGTH_SHORT).show()
+            }
+        }
         val note = TextView(this).apply {
             text = "第一次使用需要允许“显示在其他应用上层”和“录制/投射屏幕”。首次翻译英文/日文时还需要下载 ML Kit 翻译模型。"
             textSize = 13f
@@ -68,6 +83,8 @@ class MainActivity : Activity() {
         root.addView(status)
         root.addView(start)
         root.addView(stop)
+        root.addView(apiKeyInput)
+        root.addView(saveKey)
         root.addView(note)
         setContentView(root)
     }
