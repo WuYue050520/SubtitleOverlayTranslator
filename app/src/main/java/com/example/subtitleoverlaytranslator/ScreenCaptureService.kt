@@ -289,7 +289,7 @@ class ScreenCaptureService : Service() {
                                 showTranslation(quotaMessage(resetAt))
                                 processing = false
                             }
-                            return
+                            return@use
                         }
                         throw IllegalStateException("Gemini HTTP ${response.code}")
                     }
