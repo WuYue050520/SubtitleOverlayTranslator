@@ -69,6 +69,8 @@ class ScreenCaptureService : Service() {
     private var lastOcrAt = 0L
     private var lastAiAt = 0L
     private var lastAiImageSignature = ""
+    private var dailyQuotaPausedUntil = 0L
+    private var quotaMessageShown = false
     private val httpClient = OkHttpClient.Builder().build()
 
     private val latinRecognizer: TextRecognizer by lazy {
@@ -165,7 +167,8 @@ class ScreenCaptureService : Service() {
         val apiKey = getSharedPreferences("subtitle_settings", MODE_PRIVATE)
             .getString("gemini_key", "")?.trim().orEmpty()
 
-        if (apiKey.isNotEmpty() && System.currentTimeMillis() - lastAiAt >= AI_INTERVAL_MS) {
+        if (apiKey.isNotEmpty() && System.currentTimeMillis() >= dailyQuotaPausedUntil && System.currentTimeMillis() - lastAiAt >= AI_INTERVAL_MS) {
+            quotaMessageShown = false
             lastAiAt = System.currentTimeMillis()
             processWithAiVision(crop, apiKey)
         } else {
@@ -265,7 +268,7 @@ class ScreenCaptureService : Service() {
                     .put(
                         "generationConfig",
                         JSONObject()
-                            .put("temperature", 0.1)
+                            .put("thinkingConfig", JSONObject().put("thinkingLevel", "low"))
                             .put("maxOutputTokens", 120)
                     )
 
@@ -278,7 +281,18 @@ class ScreenCaptureService : Service() {
 
                 httpClient.newCall(request).execute().use { response ->
                     val raw = response.body?.string().orEmpty()
-                    if (!response.isSuccessful) throw IllegalStateException("Gemini HTTP ${response.code}")
+                    if (!response.isSuccessful) {
+                        if (response.code == 429 && isDailyQuotaError(raw)) {
+                            val resetAt = nextPacificMidnightMillis()
+                            dailyQuotaPausedUntil = resetAt
+                            handler.post {
+                                showTranslation(quotaMessage(resetAt))
+                                processing = false
+                            }
+                            return
+                        }
+                        throw IllegalStateException("Gemini HTTP ${response.code}")
+                    }
                     val json = JSONObject(raw)
                     val text = extractGeminiText(json).trim()
                     handler.post {
@@ -293,6 +307,27 @@ class ScreenCaptureService : Service() {
                 handler.post { processing = false }
             }
         }
+    }
+
+    private fun isDailyQuotaError(raw: String): Boolean {
+        val lower = raw.lowercase()
+        return lower.contains("resource_exhausted") &&
+            (lower.contains("perday") || lower.contains("per day") ||
+             lower.contains("requests per day") || lower.contains("daily"))
+    }
+
+    private fun nextPacificMidnightMillis(): Long {
+        val now = java.time.Instant.now()
+        val pacific = java.time.ZoneId.of("America/Los_Angeles")
+        val nextDate = now.atZone(pacific).toLocalDate().plusDays(1)
+        return nextDate.atStartOfDay(pacific).toInstant().toEpochMilli()
+    }
+
+    private fun quotaMessage(resetAt: Long): String {
+        val malaysia = java.time.ZoneId.of("Asia/Kuala_Lumpur")
+        val reset = java.time.Instant.ofEpochMilli(resetAt).atZone(malaysia)
+        return "⚠️ 今日 Gemini 免费额度已用完\\nAI 字幕翻译已暂停\\n预计刷新：%04d年%02d月%02d日 %02d:%02d（马来西亚时间）"
+            .format(reset.year, reset.monthValue, reset.dayOfMonth, reset.hour, reset.minute)
     }
 
     private fun extractGeminiText(json: JSONObject): String {
