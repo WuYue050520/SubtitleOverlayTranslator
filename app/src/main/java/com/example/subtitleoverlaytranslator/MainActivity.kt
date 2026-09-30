@@ -39,9 +39,7 @@ class MainActivity : Activity() {
             textSize = 28f
         }
         val desc = TextView(this).apply {
-            text = "在 YouTube、浏览器、播放器等 App 上方实时识别英文/日文字幕，并显示简体中文。
-
-默认只扫描画面下半部，并降低扫描频率以减少耗电。"
+            text = "在 YouTube、浏览器、播放器等 App 上方实时识别英文/日文字幕，并显示简体中文。\n\n默认只扫描画面下半部，并降低扫描频率以减少耗电。"
             textSize = 16f
             setPadding(0, 20, 0, 30)
         }
