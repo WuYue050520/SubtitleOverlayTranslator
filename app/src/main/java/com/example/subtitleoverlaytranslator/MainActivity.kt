@@ -63,7 +63,7 @@ class MainActivity : Activity() {
         }
         apiKeyInput = EditText(this).apply {
             hint = "OpenAI API Key（可选）"
-            text = getSharedPreferences("subtitle_settings", Context.MODE_PRIVATE).getString("openai_key", "")
+            setText(getSharedPreferences("subtitle_settings", Context.MODE_PRIVATE).getString("openai_key", "") ?: "")
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
         val saveKey = Button(this).apply {
