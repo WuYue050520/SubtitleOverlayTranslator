@@ -169,6 +169,9 @@ class ScreenCaptureService : Service() {
                         if (containsJapanese(text)) candidates.add(text)
                     }
 
+                    // Japanese OCR can sometimes hallucinate CJK characters from English text.
+                    // Prefer a genuine Japanese-script candidate only when it contains kana;
+                    // otherwise use the English/Latin candidate.
                     val text = chooseSubtitle(candidates)
                     if (text.isBlank()) {
                         handler.post { processing = false }
@@ -190,13 +193,34 @@ class ScreenCaptureService : Service() {
 
     private fun chooseSubtitle(candidates: Set<String>): String {
         if (candidates.isEmpty()) return ""
-        val japanese = candidates.filter { containsJapanese(it) }
-        if (japanese.isNotEmpty()) return japanese.maxByOrNull { it.length } ?: ""
-        val english = candidates.filter {
-            it.any(Char::isLetter) && it.length >= 2 && it.count { c -> c.isLetterOrDigit() } >= 2
-        }
-        return english.maxByOrNull { it.length } ?: ""
+
+        val japanese = candidates
+            .filter { containsJapanese(it) && hasJapaneseKana(it) }
+            .maxByOrNull { japaneseScore(it) }
+
+        val latin = candidates
+            .filter { isLikelyLatinSubtitle(it) }
+            .maxByOrNull { latinScore(it) }
+
+        // If a real Japanese kana candidate exists, use it. Otherwise prefer
+        // the Latin/English OCR result so Japanese OCR false positives do not win.
+        return japanese ?: latin ?: candidates.maxByOrNull { it.length }.orEmpty()
     }
+
+    private fun hasJapaneseKana(text: String): Boolean =
+        text.any { c -> c in '\\u3040'..'\\u309F' || c in '\\u30A0'..'\\u30FF' }
+
+    private fun japaneseScore(text: String): Int =
+        text.count { c -> c in '\\u3040'..'\\u309F' || c in '\\u30A0'..'\\u30FF' } * 4 +
+            text.count { c -> c in '\\u4E00'..'\\u9FFF' }
+
+    private fun isLikelyLatinSubtitle(text: String): Boolean {
+        val letters = text.count { it in 'A'..'Z' || it in 'a'..'z' }
+        return letters >= 2 && !hasJapaneseKana(text)
+    }
+
+    private fun latinScore(text: String): Int =
+        text.count { it in 'A'..'Z' || it in 'a'..'z' } * 2 + text.count { it.isDigit() }
 
     private fun cleanOcr(text: String): String =
         text.replace("\n", " ").replace(Regex("\\s+"), " ").trim()
