@@ -208,11 +208,11 @@ class ScreenCaptureService : Service() {
     }
 
     private fun hasJapaneseKana(text: String): Boolean =
-        text.any { c -> c in '\\u3040'..'\\u309F' || c in '\\u30A0'..'\\u30FF' }
+        text.any { c -> c in '\u3040'..'\u309F' || c in '\u30A0'..'\u30FF' }
 
     private fun japaneseScore(text: String): Int =
         text.count { c -> c in '\\u3040'..'\\u309F' || c in '\\u30A0'..'\\u30FF' } * 4 +
-            text.count { c -> c in '\\u4E00'..'\\u9FFF' }
+            text.count { c -> c in '\u4E00'..'\u9FFF' }
 
     private fun isLikelyLatinSubtitle(text: String): Boolean {
         val letters = text.count { it in 'A'..'Z' || it in 'a'..'z' }
