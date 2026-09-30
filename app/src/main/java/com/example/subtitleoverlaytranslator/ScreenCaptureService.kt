@@ -39,6 +39,13 @@ import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.nio.ByteBuffer
 import java.util.concurrent.Executors
+import android.util.Base64
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
 
 class ScreenCaptureService : Service() {
     companion object {
@@ -46,7 +53,8 @@ class ScreenCaptureService : Service() {
         const val EXTRA_RESULT_DATA = "result_data"
         private const val CHANNEL_ID = "subtitle_translate"
         private const val NOTIFICATION_ID = 42
-        private const val OCR_INTERVAL_MS = 750L
+        private const val OCR_INTERVAL_MS = 900L
+        private const val AI_INTERVAL_MS = 1800L
     }
 
     private val executor = Executors.newSingleThreadExecutor()
@@ -59,6 +67,8 @@ class ScreenCaptureService : Service() {
     private var lastShown = ""
     private var processing = false
     private var lastOcrAt = 0L
+    private var lastAiAt = 0L
+    private val httpClient = OkHttpClient.Builder().build()
 
     private val latinRecognizer: TextRecognizer by lazy {
         TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
@@ -145,10 +155,24 @@ class ScreenCaptureService : Service() {
     }
 
     private fun processBitmap(bitmap: Bitmap) {
-        val cropTop = (bitmap.height * 0.45f).toInt().coerceAtLeast(0)
-        val crop = Bitmap.createBitmap(bitmap, 0, cropTop, bitmap.width, bitmap.height - cropTop)
+        val cropTop = (bitmap.height * 0.50f).toInt().coerceAtLeast(0)
+        val cropBottom = (bitmap.height * 0.90f).toInt().coerceAtMost(bitmap.height)
+        val cropHeight = (cropBottom - cropTop).coerceAtLeast(1)
+        val crop = Bitmap.createBitmap(bitmap, 0, cropTop, bitmap.width, cropHeight)
         bitmap.recycle()
 
+        val apiKey = getSharedPreferences("subtitle_settings", MODE_PRIVATE)
+            .getString("openai_key", "")?.trim().orEmpty()
+
+        if (apiKey.isNotEmpty() && System.currentTimeMillis() - lastAiAt >= AI_INTERVAL_MS) {
+            lastAiAt = System.currentTimeMillis()
+            processWithAiVision(crop, apiKey)
+        } else {
+            processWithLocalOcr(crop)
+        }
+    }
+
+    private fun processWithLocalOcr(crop: Bitmap) {
         val input = InputImage.fromBitmap(crop, 0)
         val latinTask = latinRecognizer.process(input)
         val japaneseTask = japaneseRecognizer.process(input)
@@ -166,20 +190,17 @@ class ScreenCaptureService : Service() {
                     }
                     japanese?.textBlocks?.flatMap { it.lines }?.forEach { line ->
                         val text = cleanOcr(line.text)
-                        if (containsJapanese(text)) candidates.add(text)
+                        if (text.isNotBlank() && containsJapanese(text)) candidates.add(text)
                     }
 
-                    // Japanese OCR can sometimes hallucinate CJK characters from English text.
-                    // Prefer a genuine Japanese-script candidate only when it contains kana;
-                    // otherwise use the English/Latin candidate.
                     val text = chooseSubtitle(candidates)
                     if (text.isBlank()) {
-                        handler.post { processing = false }
+                        processing = false
                     } else if (text != lastText) {
                         lastText = text
                         translate(text)
                     } else {
-                        handler.post { processing = false }
+                        processing = false
                     }
                 } finally {
                     crop.recycle()
@@ -189,6 +210,75 @@ class ScreenCaptureService : Service() {
                 crop.recycle()
                 processing = false
             }
+    }
+
+    private fun processWithAiVision(crop: Bitmap, apiKey: String) {
+        executor.execute {
+            try {
+                val maxWidth = 1000
+                val scaled = if (crop.width > maxWidth) {
+                    Bitmap.createScaledBitmap(crop, maxWidth, (crop.height * maxWidth.toFloat() / crop.width).toInt(), true)
+                } else crop
+                val output = java.io.ByteArrayOutputStream()
+                scaled.compress(Bitmap.CompressFormat.JPEG, 70, output)
+                val b64 = Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
+                if (scaled !== crop) scaled.recycle()
+                crop.recycle()
+
+                val prompt = "This is a video subtitle region. Read ONLY the actual spoken subtitle. Ignore people, objects, logos, signs, UI text, watermarks and background text. The subtitle may be English or Japanese. Reconstruct obvious visual/OCR ambiguity, then translate it naturally into Simplified Chinese. Return ONLY the Chinese translation, with no quotes, explanation, source text, or labels. If there is no clear subtitle, return an empty string."
+
+                val content = JSONArray()
+                    .put(JSONObject().put("type", "input_text").put("text", prompt))
+                    .put(JSONObject().put("type", "input_image")
+                        .put("image_url", "data:image/jpeg;base64,$b64")
+                        .put("detail", "high"))
+
+                val inputItem = JSONObject().put("role", "user").put("content", content)
+                val body = JSONObject()
+                    .put("model", "gpt-5.6-luna")
+                    .put("input", JSONArray().put(inputItem))
+                    .put("max_output_tokens", 120)
+
+                val request = Request.Builder()
+                    .url("https://api.openai.com/v1/responses")
+                    .addHeader("Authorization", "Bearer $apiKey")
+                    .addHeader("Content-Type", "application/json")
+                    .post(body.toString().toRequestBody("application/json".toMediaType()))
+                    .build()
+
+                httpClient.newCall(request).execute().use { response ->
+                    val raw = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) throw IllegalStateException("AI HTTP ${response.code}")
+                    val json = JSONObject(raw)
+                    val text = extractResponseText(json).trim()
+                    handler.post {
+                        if (text.isNotBlank() && text != lastShown) {
+                            lastShown = text
+                            showTranslation(text)
+                        }
+                        processing = false
+                    }
+                }
+            } catch (_: Exception) {
+                handler.post { processing = false }
+            }
+        }
+    }
+
+    private fun extractResponseText(json: JSONObject): String {
+        val direct = json.optString("output_text", "")
+        if (direct.isNotBlank()) return direct
+        val output = json.optJSONArray("output") ?: return ""
+        val result = StringBuilder()
+        for (i in 0 until output.length()) {
+            val item = output.optJSONObject(i) ?: continue
+            val content = item.optJSONArray("content") ?: continue
+            for (j in 0 until content.length()) {
+                val part = content.optJSONObject(j) ?: continue
+                if (part.optString("type") == "output_text") result.append(part.optString("text"))
+            }
+        }
+        return result.toString()
     }
 
     private fun chooseSubtitle(candidates: Set<String>): String {
@@ -216,7 +306,7 @@ class ScreenCaptureService : Service() {
 
     private fun isLikelyLatinSubtitle(text: String): Boolean {
         val letters = text.count { it in 'A'..'Z' || it in 'a'..'z' }
-        return letters >= 2 && !hasJapaneseKana(text)
+        val cjk = text.count { it in '\u4E00'..'\u9FFF' }\n        val totalLetters = letters + cjk\n        return letters >= 2 && (totalLetters == 0 || letters.toDouble() / totalLetters >= 0.70) && !hasJapaneseKana(text)
     }
 
     private fun latinScore(text: String): Int =
