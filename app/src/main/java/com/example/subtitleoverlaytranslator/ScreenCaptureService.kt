@@ -60,7 +60,7 @@ class ScreenCaptureService : Service() {
         private const val CHANNEL_ID = "subtitle_translate"
         private const val NOTIFICATION_ID = 42
         private const val OCR_INTERVAL_MS = 900L
-        private const val AI_INTERVAL_MS = 2200L
+        private const val AI_INTERVAL_MS = 6000L
     }
 
     private val executor = Executors.newSingleThreadExecutor()
@@ -75,6 +75,10 @@ class ScreenCaptureService : Service() {
     private var lastOcrAt = 0L
     private var lastAiAt = 0L
     private var lastAiImageSignature = ""
+    private var lastDetectedSubtitle = ""
+    private var stableDetectedSubtitle = ""
+    private var lastDetectedAt = 0L
+    private var lastSentSubtitle = ""
     private var dailyQuotaPausedUntil = 0L
     private var quotaMessageShown = false
     private var audioRecord: AudioRecord? = null
@@ -186,13 +190,68 @@ class ScreenCaptureService : Service() {
         val apiKey = getSharedPreferences("subtitle_settings", MODE_PRIVATE)
             .getString("gemini_key", "")?.trim().orEmpty()
 
-        if (apiKey.isNotEmpty() && System.currentTimeMillis() >= dailyQuotaPausedUntil && System.currentTimeMillis() - lastAiAt >= AI_INTERVAL_MS) {
-            quotaMessageShown = false
-            lastAiAt = System.currentTimeMillis()
-            processWithAiVision(crop, apiKey, latestAudioWav)
+        if (apiKey.isNotEmpty()) {
+            // Local OCR is only a cheap change detector; Gemini provides the displayed translation.
+            processWithAiGate(crop, apiKey, latestAudioWav)
         } else {
             processWithLocalOcr(crop)
         }
+    }
+
+    private fun processWithAiGate(crop: Bitmap, apiKey: String, audioWav: ByteArray?) {
+        val input = InputImage.fromBitmap(crop, 0)
+        val latinTask = latinRecognizer.process(input)
+        val japaneseTask = japaneseRecognizer.process(input)
+        Tasks.whenAllSuccess<Any>(latinTask, japaneseTask)
+            .addOnSuccessListener { results ->
+                try {
+                    val latin = results.getOrNull(0) as? Text
+                    val japanese = results.getOrNull(1) as? Text
+                    val candidates = linkedSetOf<String>()
+                    latin?.textBlocks?.flatMap { it.lines }?.forEach { line ->
+                        val text = cleanOcr(line.text)
+                        if (text.isNotBlank()) candidates.add(text)
+                    }
+                    japanese?.textBlocks?.flatMap { it.lines }?.forEach { line ->
+                        val text = cleanOcr(line.text)
+                        if (text.isNotBlank() && containsJapanese(text)) candidates.add(text)
+                    }
+                    val detected = chooseSubtitle(candidates)
+                    val now = System.currentTimeMillis()
+                    if (detected.isBlank()) {
+                        lastDetectedSubtitle = ""
+                        stableDetectedSubtitle = ""
+                        processing = false
+                        return@addOnSuccessListener
+                    }
+                    if (detected == lastDetectedSubtitle) {
+                        stableDetectedSubtitle = detected
+                    } else {
+                        lastDetectedSubtitle = detected
+                        stableDetectedSubtitle = ""
+                        lastDetectedAt = now
+                    }
+                    val stableLongEnough = stableDetectedSubtitle == detected && now - lastDetectedAt >= 650L
+                    val cooldownOk = now - lastAiAt >= AI_INTERVAL_MS
+                    val changed = detected != lastSentSubtitle
+                    if (stableLongEnough && cooldownOk && changed && now >= dailyQuotaPausedUntil) {
+                        lastAiAt = now
+                        lastSentSubtitle = detected
+                        quotaMessageShown = false
+                        processWithAiVision(crop, apiKey, audioWav)
+                    } else {
+                        crop.recycle()
+                        processing = false
+                    }
+                } catch (_: Exception) {
+                    crop.recycle()
+                    processing = false
+                }
+            }
+            .addOnFailureListener {
+                crop.recycle()
+                processing = false
+            }
     }
 
     private fun startAudioCapture(source: Int) {
