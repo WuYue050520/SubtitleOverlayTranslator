@@ -13,6 +13,11 @@ import android.graphics.Typeface
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.Image
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.AudioAttributes
+import android.media.MediaRecorder
+import android.media.AudioPlaybackCaptureConfiguration
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
@@ -20,6 +25,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.content.pm.ServiceInfo
 import android.view.Gravity
 import android.view.WindowManager
 import android.widget.TextView
@@ -71,6 +77,9 @@ class ScreenCaptureService : Service() {
     private var lastAiImageSignature = ""
     private var dailyQuotaPausedUntil = 0L
     private var quotaMessageShown = false
+    private var audioRecord: AudioRecord? = null
+    private var audioThread: Thread? = null
+    @Volatile private var latestAudioWav: ByteArray? = null
     private val httpClient = OkHttpClient.Builder().build()
 
     private val latinRecognizer: TextRecognizer by lazy {
@@ -105,13 +114,21 @@ class ScreenCaptureService : Service() {
             intent.getParcelableExtra(EXTRA_RESULT_DATA)
         } ?: return START_NOT_STICKY
 
-        startForeground(NOTIFICATION_ID, buildNotification())
+        val audioSource = getSharedPreferences("subtitle_settings", MODE_PRIVATE).getInt("audio_source", 0)
+        if (Build.VERSION.SDK_INT >= 29) {
+            val type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
+                if (audioSource == 2) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
+            startForeground(NOTIFICATION_ID, buildNotification(), type)
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification())
+        }
 
         if (projection == null) {
             val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             projection = manager.getMediaProjection(resultCode, data)
             projection?.registerCallback(projectionCallback, handler)
             startCapture()
+            startAudioCapture(audioSource)
         }
         return START_NOT_STICKY
     }
@@ -170,10 +187,78 @@ class ScreenCaptureService : Service() {
         if (apiKey.isNotEmpty() && System.currentTimeMillis() >= dailyQuotaPausedUntil && System.currentTimeMillis() - lastAiAt >= AI_INTERVAL_MS) {
             quotaMessageShown = false
             lastAiAt = System.currentTimeMillis()
-            processWithAiVision(crop, apiKey)
+            processWithAiVision(crop, apiKey, latestAudioWav)
         } else {
             processWithLocalOcr(crop)
         }
+    }
+
+    private fun startAudioCapture(source: Int) {
+        if (source == 0 || audioThread != null) return
+        if (source == 2 && checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) return
+        if (source == 1 && Build.VERSION.SDK_INT < 29) {
+            handler.post { showTranslation("手机 App 内部声音需要 Android 10 或更高版本") }
+            return
+        }
+        try {
+            val sampleRate = 16000
+            val channel = AudioFormat.CHANNEL_IN_MONO
+            val encoding = AudioFormat.ENCODING_PCM_16BIT
+            val minBuffer = AudioRecord.getMinBufferSize(sampleRate, channel, encoding).coerceAtLeast(sampleRate * 2)
+            val bufferSize = minBuffer * 2
+            val record = if (source == 1) {
+                val config = AudioPlaybackCaptureConfiguration.Builder(projection!!)
+                    .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                    .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                    .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                    .build()
+                AudioRecord.Builder().setAudioFormat(AudioFormat.Builder().setEncoding(encoding).setSampleRate(sampleRate).setChannelMask(channel).build())
+                    .setBufferSizeInBytes(bufferSize).setAudioPlaybackCaptureConfig(config).build()
+            } else {
+                AudioRecord.Builder().setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
+                    .setAudioFormat(AudioFormat.Builder().setEncoding(encoding).setSampleRate(sampleRate).setChannelMask(channel).build())
+                    .setBufferSizeInBytes(bufferSize).build()
+            }
+            audioRecord = record
+            audioThread = Thread {
+                val samplesPerChunk = sampleRate * 3
+                val pcm = ShortArray(samplesPerChunk)
+                try {
+                    record.startRecording()
+                    while (!Thread.currentThread().isInterrupted && audioRecord === record) {
+                        var filled = 0
+                        while (filled < samplesPerChunk && !Thread.currentThread().isInterrupted) {
+                            val n = record.read(pcm, filled, samplesPerChunk - filled, AudioRecord.READ_BLOCKING)
+                            if (n <= 0) break
+                            filled += n
+                        }
+                        if (filled > sampleRate / 2) latestAudioWav = pcmToWav(pcm, filled, sampleRate)
+                    }
+                } catch (_: Exception) {
+                } finally {
+                    try { record.stop() } catch (_: Exception) {}
+                    record.release()
+                }
+            }.also { it.start() }
+        } catch (_: Exception) {
+            audioRecord = null
+            audioThread = null
+        }
+    }
+
+    private fun pcmToWav(samples: ShortArray, count: Int, sampleRate: Int): ByteArray {
+        val dataSize = count * 2
+        val out = ByteArray(44 + dataSize)
+        fun putInt(pos: Int, value: Int) { out[pos]=(value and 255).toByte(); out[pos+1]=((value shr 8) and 255).toByte(); out[pos+2]=((value shr 16) and 255).toByte(); out[pos+3]=((value shr 24) and 255).toByte() }
+        fun putShort(pos: Int, value: Int) { out[pos]=(value and 255).toByte(); out[pos+1]=((value shr 8) and 255).toByte() }
+        out[0]='R'.code.toByte(); out[1]='I'.code.toByte(); out[2]='F'.code.toByte(); out[3]='F'.code.toByte()
+        putInt(4,36+dataSize); out[8]='W'.code.toByte(); out[9]='A'.code.toByte(); out[10]='V'.code.toByte(); out[11]='E'.code.toByte()
+        out[12]='f'.code.toByte(); out[13]='m'.code.toByte(); out[14]='t'.code.toByte(); out[15]=' '.code.toByte()
+        putInt(16,16); putShort(20,1); putShort(22,1); putInt(24,sampleRate); putInt(28,sampleRate*2); putShort(32,2); putShort(34,16)
+        out[36]='d'.code.toByte(); out[37]='a'.code.toByte(); out[38]='t'.code.toByte(); out[39]='a'.code.toByte(); putInt(40,dataSize)
+        var p=44
+        for(i in 0 until count){ val v=samples[i].toInt(); out[p++]=(v and 255).toByte(); out[p++]=((v shr 8) and 255).toByte() }
+        return out
     }
 
     private fun processWithLocalOcr(crop: Bitmap) {
@@ -216,73 +301,53 @@ class ScreenCaptureService : Service() {
             }
     }
 
-    private fun processWithAiVision(crop: Bitmap, apiKey: String) {
+    private fun processWithAiVision(crop: Bitmap, apiKey: String, audioWav: ByteArray?) {
         executor.execute {
             try {
                 val maxWidth = 1000
-                val scaled = if (crop.width > maxWidth) {
-                    Bitmap.createScaledBitmap(
-                        crop,
-                        maxWidth,
-                        (crop.height * maxWidth.toFloat() / crop.width).toInt().coerceAtLeast(1),
-                        true
-                    )
-                } else crop
-
-                // Avoid sending essentially identical subtitle frames repeatedly.
+                val scaled = if (crop.width > maxWidth) Bitmap.createScaledBitmap(crop, maxWidth, (crop.height * maxWidth.toFloat() / crop.width).toInt().coerceAtLeast(1), true) else crop
                 val signature = imageSignature(scaled)
-                if (signature == lastAiImageSignature) {
+                if (signature == lastAiImageSignature && audioWav == null) {
                     if (scaled !== crop) scaled.recycle()
                     crop.recycle()
                     handler.post { processing = false }
                     return@execute
                 }
                 lastAiImageSignature = signature
-
                 val output = java.io.ByteArrayOutputStream()
                 scaled.compress(Bitmap.CompressFormat.JPEG, 82, output)
-                val b64 = Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
+                val imageB64 = Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
                 if (scaled !== crop) scaled.recycle()
                 crop.recycle()
 
-                val modeIndex = getSharedPreferences("subtitle_settings", MODE_PRIVATE)
-                    .getInt("translation_mode", 0)
+                val prefs = getSharedPreferences("subtitle_settings", MODE_PRIVATE)
+                val modeIndex = prefs.getInt("translation_mode", 0)
                 val modeInstruction = when (modeIndex) {
-                    0 -> "This is a nature/wildlife documentary. Use accurate natural-history and wildlife terminology. Preserve species names, locations and measurements. Translate narration in clear factual Chinese. If an animal or fish has an established Chinese common name, prefer it; if uncertain, keep the original proper name rather than inventing one."
+                    0 -> "This is a nature/wildlife documentary. Use accurate natural-history and wildlife terminology. Preserve species names, locations and measurements. If an established Chinese common name is certain, use it; otherwise do not invent one."
                     1 -> "This is anime/animation. Preserve character names, attacks, organizations and fictional terms consistently. Keep dialogue natural and character-appropriate."
-                    2 -> "This is manga/comic content. Preserve character names, speech-bubble wording and comic terminology. Keep short dialogue natural and do not hallucinate text outside the bubble."
+                    2 -> "This is manga/comic content. Preserve character names and speech-bubble wording. Do not invent text outside the bubble."
                     3 -> "This is a video game. Preserve established game terminology, item/skill names, character names, quests, stats and UI terms consistently."
                     4 -> "This is a movie/TV drama. Preserve names and story terminology consistently and translate dialogue naturally according to speaker tone."
                     else -> "Use general subtitle translation. Preserve names and technical terms and translate naturally according to context."
                 }
-                val prompt = "You are a professional subtitle translator. " +
-                    "Read ONLY the actual spoken subtitle text visible in the image. " +
-                    "Ignore people, faces, objects, scenery, signs, logos, watermarks, app UI and unrelated background text. " +
-                    "The subtitle may be English or Japanese. Carefully reconstruct only the readable subtitle before translating it. " +
-                    "Never invent missing words. If part is unclear, preserve only what is readable instead of guessing. " +
-                    "Apply this content mode: " + modeInstruction + " " +
-                    "Return ONLY the final Simplified Chinese translation, with no explanation, no English reconstruction and no quotation marks. " +
+                val hasAudio = audioWav != null && audioWav.isNotEmpty()
+                val prompt = "You are a professional subtitle translator. Use BOTH the visible subtitle image and the supplied audio when audio is present. " +
+                    "The audio is the surrounding 3-second speech segment; use it to correct OCR errors, missing words and punctuation. " +
+                    "Read ONLY spoken subtitle text. Ignore faces, scenery, signs, logos, watermarks, app UI and unrelated background text. " +
+                    "The subtitle may be English or Japanese. Never invent words that are not supported by the image or audio. " +
+                    modeInstruction + " Return ONLY the final Simplified Chinese translation, with no explanation, no English reconstruction and no quotation marks. " +
                     "If there is no clear spoken subtitle, return an empty string."
 
                 val parts = JSONArray()
                     .put(JSONObject().put("text", prompt))
-                    .put(
-                        JSONObject().put(
-                            "inline_data",
-                            JSONObject()
-                                .put("mime_type", "image/jpeg")
-                                .put("data", b64)
-                        )
-                    )
+                    .put(JSONObject().put("inline_data", JSONObject().put("mime_type", "image/jpeg").put("data", imageB64)))
+                if (hasAudio) {
+                    parts.put(JSONObject().put("inline_data", JSONObject().put("mime_type", "audio/wav").put("data", Base64.encodeToString(audioWav, Base64.NO_WRAP))))
+                }
 
                 val body = JSONObject()
                     .put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", parts)))
-                    .put(
-                        "generationConfig",
-                        JSONObject()
-                            .put("thinkingConfig", JSONObject().put("thinkingLevel", "low"))
-                            .put("maxOutputTokens", 120)
-                    )
+                    .put("generationConfig", JSONObject().put("thinkingConfig", JSONObject().put("thinkingLevel", "low")).put("maxOutputTokens", 120))
 
                 val request = Request.Builder()
                     .url("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent")
@@ -303,14 +368,13 @@ class ScreenCaptureService : Service() {
                             }
                             return@use
                         }
-                        throw IllegalStateException("Gemini HTTP ${response.code}")
+                        throw IllegalStateException("Gemini HTTP " + response.code)
                     }
-                    val json = JSONObject(raw)
-                    val text = extractGeminiText(json).trim()
+                    val resultText = extractGeminiText(JSONObject(raw)).trim()
                     handler.post {
-                        if (text.isNotBlank() && text != lastShown) {
-                            lastShown = text
-                            showTranslation(text)
+                        if (resultText.isNotBlank() && resultText != lastShown) {
+                            lastShown = resultText
+                            showTranslation(resultText)
                         }
                         processing = false
                     }
@@ -529,6 +593,10 @@ class ScreenCaptureService : Service() {
     }
 
     override fun onDestroy() {
+        audioThread?.interrupt()
+        audioThread = null
+        audioRecord = null
+        latestAudioWav = null
         try { projection?.unregisterCallback(projectionCallback) } catch (_: Exception) { }
         try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeViewImmediate(overlay) } catch (_: Exception) { }
         overlay = null
