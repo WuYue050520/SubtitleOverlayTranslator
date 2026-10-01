@@ -93,7 +93,7 @@ class ScreenCaptureService : Service() {
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
-            handler.post { stopSelf() }
+            handler.post { getSharedPreferences("subtitle_settings", MODE_PRIVATE).edit().putBoolean("running", false).apply(); stopSelf() }
         }
     }
 
@@ -122,6 +122,8 @@ class ScreenCaptureService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, buildNotification())
         }
+
+        getSharedPreferences("subtitle_settings", MODE_PRIVATE).edit().putBoolean("running", true).apply()
 
         if (projection == null) {
             val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -593,6 +595,7 @@ class ScreenCaptureService : Service() {
     }
 
     override fun onDestroy() {
+        getSharedPreferences("subtitle_settings", MODE_PRIVATE).edit().putBoolean("running", false).apply()
         audioThread?.interrupt()
         audioThread = null
         audioRecord = null
