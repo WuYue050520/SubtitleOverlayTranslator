@@ -15,6 +15,8 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.CheckBox
 import android.widget.LinearLayout
+import android.widget.Spinner
+import android.widget.ArrayAdapter
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.ActivityCompat
@@ -25,6 +27,7 @@ class MainActivity : Activity() {
     private val notificationRequest = 1002
     private lateinit var status: TextView
     private lateinit var apiKeyInput: EditText
+    private lateinit var modeSpinner: Spinner
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,7 +45,7 @@ class MainActivity : Activity() {
             textSize = 28f
         }
         val desc = TextView(this).apply {
-            text = "在 YouTube、浏览器、播放器等 App 上方实时识别英文/日文字幕，并显示简体中文。\n\n默认只扫描画面下半部，并降低扫描频率以减少耗电。"
+            text = "在 YouTube、浏览器、播放器等 App 上方实时识别英文/日文字幕，并显示简体中文。\n\n可选择纪录片、动画、漫画、游戏等模式，让 AI 根据内容类型处理专有名词、语气和上下文。"
             textSize = 16f
             setPadding(0, 20, 0, 30)
         }
@@ -61,6 +64,30 @@ class MainActivity : Activity() {
                 status.text = "状态：已停止"
             }
         }
+        val modeLabel = TextView(this).apply {
+            text = "翻译模式（影响 AI 对术语、语气和上下文的处理）"
+            textSize = 15f
+            setPadding(0, 18, 0, 6)
+        }
+        modeSpinner = Spinner(this)
+        val modes = arrayOf(
+            "纪录片（河中巨怪等）",
+            "动画 / 番剧",
+            "漫画 / 漫画视频",
+            "游戏",
+            "电影 / 连续剧",
+            "普通通用"
+        )
+        modeSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, modes)
+        val prefs = getSharedPreferences("subtitle_settings", Context.MODE_PRIVATE)
+        modeSpinner.setSelection(prefs.getInt("translation_mode", 0).coerceIn(0, modes.lastIndex))
+        modeSpinner.setOnItemSelectedListener(object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                prefs.edit().putInt("translation_mode", position).apply()
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        })
+
         apiKeyInput = EditText(this).apply {
             hint = "Gemini API Key（免费额度）"
             setText(getSharedPreferences("subtitle_settings", Context.MODE_PRIVATE).getString("gemini_key", "") ?: "")
@@ -83,6 +110,8 @@ class MainActivity : Activity() {
         root.addView(status)
         root.addView(start)
         root.addView(stop)
+        root.addView(modeLabel)
+        root.addView(modeSpinner)
         root.addView(apiKeyInput)
         root.addView(saveKey)
         root.addView(note)
