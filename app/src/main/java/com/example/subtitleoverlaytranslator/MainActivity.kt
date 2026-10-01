@@ -29,6 +29,7 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var apiKeyInput: EditText
     private lateinit var modeSpinner: Spinner
+    private lateinit var audioSpinner: Spinner
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -89,6 +90,26 @@ class MainActivity : Activity() {
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
         })
 
+        val audioLabel = TextView(this).apply {
+            text = "声音识别来源（可与画面字幕一起交给 AI）"
+            textSize = 15f
+            setPadding(0, 18, 0, 6)
+        }
+        audioSpinner = Spinner(this)
+        val audioSources = arrayOf(
+            "🔇 不使用声音（只识别画面字幕）",
+            "📱 手机 App 内部声音（YouTube / 播放器 / 游戏）",
+            "🎤 手机外部声音（麦克风）"
+        )
+        audioSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, audioSources)
+        audioSpinner.setSelection(prefs.getInt("audio_source", 0).coerceIn(0, audioSources.lastIndex))
+        audioSpinner.setOnItemSelectedListener(object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                prefs.edit().putInt("audio_source", position).apply()
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        })
+
         apiKeyInput = EditText(this).apply {
             hint = "Gemini API Key（免费额度）"
             setText(getSharedPreferences("subtitle_settings", Context.MODE_PRIVATE).getString("gemini_key", "") ?: "")
@@ -113,6 +134,8 @@ class MainActivity : Activity() {
         root.addView(stop)
         root.addView(modeLabel)
         root.addView(modeSpinner)
+        root.addView(audioLabel)
+        root.addView(audioSpinner)
         root.addView(apiKeyInput)
         root.addView(saveKey)
         root.addView(note)
@@ -132,9 +155,10 @@ class MainActivity : Activity() {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), notificationRequest)
         }
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+        val audioSource = getSharedPreferences("subtitle_settings", Context.MODE_PRIVATE).getInt("audio_source", 0)
+        if (audioSource == 2 && ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), audioRequest)
-            Toast.makeText(this, "请允许音频权限，以便选择识别手机 App 声音或外部声音。", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "请允许麦克风权限后，再点击一次开启翻译。", Toast.LENGTH_LONG).show()
             return
         }
 
