@@ -245,11 +245,23 @@ class ScreenCaptureService : Service() {
                 if (scaled !== crop) scaled.recycle()
                 crop.recycle()
 
-                val prompt = "You are translating subtitles from a video. Read ONLY the actual spoken subtitle text visible in the image. " +
-                    "Ignore people, faces, objects, scenery, signs, logos, watermarks, app UI and other background text. " +
-                    "The subtitle may be English or Japanese. Carefully reconstruct the exact intended subtitle from the image, " +
-                    "including punctuation, names and numbers when clear. Do not invent words that are not visible. " +
-                    "Then translate it naturally into Simplified Chinese. Return ONLY the Chinese translation. " +
+                val modeIndex = getSharedPreferences("subtitle_settings", MODE_PRIVATE)
+                    .getInt("translation_mode", 0)
+                val modeInstruction = when (modeIndex) {
+                    0 -> "This is a nature/wildlife documentary. Use accurate natural-history and wildlife terminology. Preserve species names, locations and measurements. Translate narration in clear factual Chinese. If an animal or fish has an established Chinese common name, prefer it; if uncertain, keep the original proper name rather than inventing one."
+                    1 -> "This is anime/animation. Preserve character names, attacks, organizations and fictional terms consistently. Keep dialogue natural and character-appropriate."
+                    2 -> "This is manga/comic content. Preserve character names, speech-bubble wording and comic terminology. Keep short dialogue natural and do not hallucinate text outside the bubble."
+                    3 -> "This is a video game. Preserve established game terminology, item/skill names, character names, quests, stats and UI terms consistently."
+                    4 -> "This is a movie/TV drama. Preserve names and story terminology consistently and translate dialogue naturally according to speaker tone."
+                    else -> "Use general subtitle translation. Preserve names and technical terms and translate naturally according to context."
+                }
+                val prompt = "You are a professional subtitle translator. " +
+                    "Read ONLY the actual spoken subtitle text visible in the image. " +
+                    "Ignore people, faces, objects, scenery, signs, logos, watermarks, app UI and unrelated background text. " +
+                    "The subtitle may be English or Japanese. Carefully reconstruct only the readable subtitle before translating it. " +
+                    "Never invent missing words. If part is unclear, preserve only what is readable instead of guessing. " +
+                    "Apply this content mode: " + modeInstruction + " " +
+                    "Return ONLY the final Simplified Chinese translation, with no explanation, no English reconstruction and no quotation marks. " +
                     "If there is no clear spoken subtitle, return an empty string."
 
                 val parts = JSONArray()
