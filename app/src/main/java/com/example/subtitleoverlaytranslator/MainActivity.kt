@@ -25,6 +25,7 @@ import androidx.core.content.ContextCompat
 class MainActivity : Activity() {
     private val captureRequest = 1001
     private val notificationRequest = 1002
+    private val audioRequest = 1003
     private lateinit var status: TextView
     private lateinit var apiKeyInput: EditText
     private lateinit var modeSpinner: Spinner
@@ -131,8 +132,25 @@ class MainActivity : Activity() {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), notificationRequest)
         }
 
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), audioRequest)
+            Toast.makeText(this, "请允许音频权限，以便选择识别手机 App 声音或外部声音。", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        startScreenCaptureRequest()
+    }
+
+    private fun startScreenCaptureRequest() {
         val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         startActivityForResult(manager.createScreenCaptureIntent(), captureRequest)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == audioRequest) {
+            startScreenCaptureRequest()
+        }
     }
 
     @Deprecated("Kept for simple AndroidIDE compatibility")
