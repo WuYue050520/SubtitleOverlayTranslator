@@ -55,6 +55,10 @@ class MainActivity : Activity() {
             textSize = 15f
             text = "状态：未启动"
         }
+        if (getSharedPreferences("subtitle_settings", Context.MODE_PRIVATE).getBoolean("running", false)) {
+            status.text = "状态：正在实时识别（可切到 YouTube 等 App）"
+        }
+
         val start = Button(this).apply {
             text = "开启实时翻译"
             setOnClickListener { requestOverlayThenCapture() }
@@ -63,6 +67,7 @@ class MainActivity : Activity() {
             text = "停止翻译"
             setOnClickListener {
                 stopService(Intent(this@MainActivity, ScreenCaptureService::class.java))
+                getSharedPreferences("subtitle_settings", Context.MODE_PRIVATE).edit().putBoolean("running", false).apply()
                 status.text = "状态：已停止"
             }
         }
